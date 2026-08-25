@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
@@ -36,6 +36,7 @@ tempfile = "3"
 # Software identity (encrypted at rest) and passphrase/PIN entry.
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
+sha2 = "0.10"
 zeroize = "1"
 secrecy = "0.10"
 rpassword = "7"

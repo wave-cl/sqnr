@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "sqnr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "bs58",
@@ -1610,11 +1610,12 @@ dependencies = [
 
 [[package]]
 name = "sqnr-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "ed25519-dalek",
  "hex",
+ "sha2",
  "thiserror 2.0.20",
 ]
 

@@ -1,45 +1,52 @@
-//! The one admin transaction: fetch a challenge, sign the command, POST it.
+//! The one admin transaction: fetch a challenge, sign a batch, POST it.
 //!
-//! This is the whole authority protocol in one function, shared by the CLI and
-//! the GUI. The card only ever signs a command bound to a *live* server nonce,
-//! so a caller that retries after a dropped connection simply re-runs this with
-//! a fresh challenge — there is no way to double-apply a captured signature.
+//! This is the whole authority protocol in one function, shared by any client
+//! (the sqex CLI, the GUI). The caller supplies opaque [`Operation`]s already
+//! carrying their human context; sqnr binds them to a live server nonce, shows
+//! the context, signs the batch once, and submits it. The card only ever signs a
+//! transaction bound to a fresh nonce, so retrying after a dropped connection
+//! simply re-runs this with a new challenge — a captured signature cannot be
+//! double-applied.
 
-use sqnr_core::{Action, Command, PubKey, SignedCommand};
+use sqnr_core::{Operation, PubKey, SignedTransaction, Transaction};
 
 use crate::client::Client;
 use crate::signer::Backend;
 
-/// Run one signed admin action against `server`, returning the server's JSON.
+/// Sign and submit a batch of operations against `server`, returning the
+/// server's JSON response.
 ///
-/// `on_touch` is invoked immediately before a YubiKey signature so a UI can
-/// prompt for the tap; it is not called for a software identity.
-pub async fn run_once(
+/// `on_review` is called with the assembled transaction before signing, so a UI
+/// can show exactly what is about to be authorized. `on_touch` is called
+/// immediately before a YubiKey signature (a tap); it is not called for a
+/// software identity.
+pub async fn sign_and_submit(
     client: &mut Client,
     backend: &Backend,
     server: PubKey,
-    action: Action,
+    ops: Vec<Operation>,
+    on_review: &dyn Fn(&Transaction),
     on_touch: &dyn Fn(),
 ) -> Result<serde_json::Value, String> {
+    if ops.is_empty() {
+        return Err("nothing to sign (empty transaction)".into());
+    }
     let (cs, nonce_bytes) = client.get("/admin/challenge").await?;
     if cs != 200 || nonce_bytes.len() != 32 {
         return Err(format!("challenge failed (status {cs})"));
     }
     let mut nonce = [0u8; 32];
     nonce.copy_from_slice(&nonce_bytes);
-    let command = Command {
-        action,
-        nonce,
-        server,
-    };
+    let transaction = Transaction { server, nonce, ops };
 
+    on_review(&transaction);
     if backend.is_yubikey() {
         on_touch();
     }
-    let signature = backend.sign(&command.signing_bytes()).await?;
+    let signature = backend.sign(&transaction.signing_bytes()).await?;
 
-    let signed = SignedCommand {
-        command,
+    let signed = SignedTransaction {
+        transaction,
         admin: backend.public(),
         signature,
     };

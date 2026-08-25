@@ -1,11 +1,17 @@
 # sqnr — the sQUIC signer
 
-sqnr signs admin transactions against a sqex-style HTTP/3 server. Authority is
-an **Ed25519 signature on the command itself** — never the connection's
-transport key — and the signing key lives in one of two interchangeable
-backends: a **YubiKey** (OpenPGP Authentication key) or a **software identity**
-in `~/.sqnr` (encrypted for humans, or plaintext for unattended automation). It
-ships as a CLI.
+sqnr signs admin **transactions** against an HTTP/3 server. Authority is an
+**Ed25519 signature on the transaction** — never the connection's transport key —
+and the signing key lives in one of two interchangeable backends: a **YubiKey**
+(OpenPGP Authentication key) or a **software identity** in `~/.sqnr` (encrypted
+for humans, or plaintext for unattended automation).
+
+sqnr is **generic**: it signs an ordered batch of *opaque* operations it never
+parses, each carrying the human context the operator approves. It does not know
+any server's command set, so a new command never touches the signer. A service
+(e.g. [sqex](https://github.com/wave-cl/sqex)) defines its own command
+vocabulary and its own CLI on top of sqnr's library; sqnr itself ships a small
+CLI for **identity management**.
 
 ## Why
 
@@ -37,34 +43,40 @@ the same signature to the server; only the key custody differs.
 The passphrase, PIN, and touch are always supplied by the operator at the
 terminal; sqnr never stores them.
 
-## How a signed command works
+## How a signed transaction works
 
-Each command is replay-protected by challenge-response and bound to one server:
+A transaction is an ordered batch of operations, replay-protected and bound to
+one server. One signature authorizes the whole batch; the server applies it
+atomically.
 
 1. `GET /admin/challenge` → a single-use 32-byte nonce.
-2. Sign the canonical bytes of `{ action, nonce, server_pubkey }` with the admin
-   Ed25519 key (domain-separated by `sqex-admin-v1`).
-3. `POST /admin/command` with `{ command, admin_pubkey, signature }`.
+2. Build `Transaction { server, nonce, ops: [ { summary, detail, payload } … ] }`,
+   where each `payload` is opaque to sqnr and each `summary` is the human context.
+3. Sign `TX_CONTEXT(b"sqnr-tx-v1") || sha256(encode(transaction))` — a fixed-size
+   hash, so a YubiKey signs one tap no matter how large the batch, and the
+   summaries (being hashed in) are bound to the signature.
+4. `POST /admin/command` with `{ transaction, admin_pubkey, signature }`.
 
-The signed-command protocol and the `PubKey` type live in `sqnr-core`; a server
-depends on that crate alone to verify.
+The generic transaction protocol and the `PubKey` type live in `sqnr-core`; a
+server depends on that crate alone to verify. The *meaning* of each payload lives
+in the service, which re-renders the summary from the payload and checks it
+matches — so the context the operator approved provably corresponds to what runs.
 
 ## Usage
 
+sqnr's own CLI manages identities:
+
 ```
-sqnr keygen                                  # create ~/.sqnr/identity (prompts)
-sqnr keygen --plaintext                      # unencrypted key for automation (no prompt)
-sqnr pubkey                                  # print the admin key to authorize
-sqnr --server 127.0.0.1:5400 --server-key <b58> status
-sqnr whitelist enable                        # signs (passphrase prompt)
-sqnr whitelist add <peer-b58>
-sqnr whitelist list
-sqnr audit -n 50
-sqnr --yubikey whitelist enable              # sign with a YubiKey (PIN + touch)
+sqnr keygen                # create ~/.sqnr/identity, encrypted (prompts for a passphrase)
+sqnr keygen --plaintext    # unencrypted key for automation (no prompt)
+sqnr pubkey                # print the public key to add to a server's admin list
+sqnr --yubikey pubkey      # the YubiKey's Authentication-key public key
 ```
 
-`--server` / `--server-key` (and the default identity path) can be set once in
-`~/.sqnr/config`:
+Signing actual commands is done by the service's own tool built on the sqnr
+library — for sqex, that is [`sqex`](https://github.com/wave-cl/sqex) (e.g.
+`sqex --server … whitelist enable`). Common connection defaults can be set once
+in `~/.sqnr/config`:
 
 ```toml
 server = "127.0.0.1:5400"
@@ -73,8 +85,9 @@ server_key = "<base58 server pubkey>"
 
 ## Layout
 
-- `sqnr-core` — keys and the signed admin-command protocol (no networking, no I/O).
-- `sqnr` — the signing backends, the HTTP/3 client, the transaction flow, and the CLI.
+- `sqnr-core` — keys and the generic signed-transaction protocol (no networking, no I/O).
+- `sqnr` — the signing backends (file + YubiKey), the HTTP/3 client, the
+  `sign_and_submit` flow, and the identity-management CLI.
 
 Built on [squic](https://github.com/wave-cl/squic-rust); signs for
 [sqex](https://github.com/wave-cl/sqex). Design proposals live in
