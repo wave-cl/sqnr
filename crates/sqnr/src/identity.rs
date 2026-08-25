@@ -1,10 +1,17 @@
-//! The software identity: an Ed25519 admin key kept in `~/.sqnr/identity`,
-//! always encrypted at rest with a passphrase (argon2id + ChaCha20-Poly1305).
+//! The software identity: an Ed25519 admin key in `~/.sqnr/identity`.
 //!
-//! The file has three lines — a header, the base58 encrypted seed blob, and the
-//! base58 public key. Storing the public key in the clear lets `sqnr pubkey`
-//! report the admin identity without the passphrase; only signing needs to
-//! decrypt. The encrypt/decrypt construction mirrors sqssh's key format.
+//! Two forms are supported, chosen at `keygen` time:
+//!
+//! - **Encrypted** (the default) — the seed is sealed with a passphrase
+//!   (argon2id + ChaCha20-Poly1305); signing prompts for it.
+//! - **Plaintext** — the seed sits in the file unencrypted (mode 0600), so an
+//!   automated caller can sign with no prompt. This is the deliberate trade-off
+//!   for unattended signing; guard the file accordingly.
+//!
+//! Either way the file is three lines — a header naming the form, the base58
+//! seed (sealed or bare), and the base58 public key. Storing the public key in
+//! the clear lets `sqnr pubkey` and the "which form is this?" check work without
+//! the passphrase.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -17,7 +24,8 @@ use ed25519_dalek::SigningKey;
 use sqnr_core::{PubKey, SoftwareSigner};
 use zeroize::Zeroizing;
 
-const HEADER: &str = "SQNR-ED25519-ENCRYPTED-KEY";
+const ENC_HEADER: &str = "SQNR-ED25519-ENCRYPTED-KEY";
+const PLAIN_HEADER: &str = "SQNR-ED25519-PRIVATE-KEY";
 
 /// argon2id parameters (memory KiB, iterations, parallelism). Recorded in the
 /// blob so a future bump can still decrypt older files.
@@ -43,9 +51,11 @@ pub fn default_identity_path() -> Result<PathBuf, String> {
     Ok(sqnr_dir()?.join("identity"))
 }
 
-/// Generate a fresh Ed25519 identity, encrypt it under `passphrase`, and write
-/// it to `path` (mode 0600). Returns the new public key.
-pub fn generate(path: &Path, passphrase: &str) -> Result<PubKey, String> {
+/// Generate a fresh Ed25519 identity and write it to `path` (mode 0600).
+///
+/// `passphrase` = `Some(..)` seals the seed; `None` writes it plaintext for
+/// unattended signing. Returns the new public key.
+pub fn generate(path: &Path, passphrase: Option<&str>) -> Result<PubKey, String> {
     if path.exists() {
         return Err(format!(
             "{} already exists; refusing to overwrite",
@@ -54,21 +64,44 @@ pub fn generate(path: &Path, passphrase: &str) -> Result<PubKey, String> {
     }
     let key = SigningKey::generate(&mut rand_core::OsRng);
     let public = PubKey::new(key.verifying_key().to_bytes());
-    write_encrypted(path, &key, &public, passphrase)?;
+    let (header, data) = match passphrase {
+        Some(pp) => (ENC_HEADER, encrypt_seed(&key.to_bytes(), pp)?),
+        None => (
+            PLAIN_HEADER,
+            Zeroizing::new(bs58::encode(key.to_bytes()).into_string()),
+        ),
+    };
+    write_file(path, header, &data, &public)?;
     Ok(public)
+}
+
+/// Whether the identity at `path` is passphrase-encrypted (so a caller knows
+/// whether it must prompt before [`load`]).
+pub fn is_encrypted(path: &Path) -> Result<bool, String> {
+    let (header, _, _) = read_lines(path)?;
+    Ok(header == ENC_HEADER)
 }
 
 /// Read the public key from an identity file without the passphrase.
 pub fn read_public(path: &Path) -> Result<PubKey, String> {
-    let (_blob, public) = read_lines(path)?;
+    let (_header, _data, public) = read_lines(path)?;
     PubKey::from_base58(&public).map_err(|e| format!("bad public key line: {e}"))
 }
 
-/// Decrypt the identity under `passphrase` and return a signer over it. The
-/// stored public key is checked against the decrypted key as a tamper guard.
-pub fn load(path: &Path, passphrase: &str) -> Result<SoftwareSigner, String> {
-    let (blob_b58, public_b58) = read_lines(path)?;
-    let key = decrypt_seed(&blob_b58, passphrase)?;
+/// Load the identity and return a signer over it. Pass the passphrase for an
+/// encrypted file (see [`is_encrypted`]); `None` is fine for a plaintext file.
+/// The stored public key is checked against the decoded key as a tamper guard.
+pub fn load(path: &Path, passphrase: Option<&str>) -> Result<SoftwareSigner, String> {
+    let (header, data, public_b58) = read_lines(path)?;
+    let key = match header.as_str() {
+        ENC_HEADER => {
+            let pp = passphrase
+                .ok_or_else(|| "identity is encrypted; a passphrase is required".to_string())?;
+            decrypt_seed(&data, pp)?
+        }
+        PLAIN_HEADER => decode_plaintext(&data)?,
+        other => return Err(format!("unknown identity header {other:?}")),
+    };
     let derived = PubKey::new(key.verifying_key().to_bytes());
     let stored = PubKey::from_base58(&public_b58).map_err(|e| format!("bad public key line: {e}"))?;
     if derived != stored {
@@ -77,29 +110,23 @@ pub fn load(path: &Path, passphrase: &str) -> Result<SoftwareSigner, String> {
     Ok(SoftwareSigner::new(key))
 }
 
-fn write_encrypted(
-    path: &Path,
-    key: &SigningKey,
-    public: &PubKey,
-    passphrase: &str,
-) -> Result<(), String> {
-    let blob = encrypt_seed(&key.to_bytes(), passphrase)?;
-    let content = Zeroizing::new(format!("{HEADER}\n{blob}\n{}\n", public.to_base58()));
+fn write_file(path: &Path, header: &str, data: &str, public: &PubKey) -> Result<(), String> {
+    let content = Zeroizing::new(format!("{header}\n{data}\n{}\n", public.to_base58()));
     fs::write(path, content.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("chmod {}: {e}", path.display()))?;
     Ok(())
 }
 
-fn read_lines(path: &Path) -> Result<(String, String), String> {
+fn read_lines(path: &Path) -> Result<(String, String, String), String> {
     let content =
         Zeroizing::new(fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?);
     let mut lines = content.lines();
-    let header = lines.next().unwrap_or("").trim();
-    if header != HEADER {
+    let header = lines.next().unwrap_or("").trim().to_string();
+    if header != ENC_HEADER && header != PLAIN_HEADER {
         return Err(format!("{}: not an sqnr identity file", path.display()));
     }
-    let blob = lines
+    let data = lines
         .next()
         .ok_or_else(|| "identity file missing key data".to_string())?
         .trim()
@@ -109,11 +136,24 @@ fn read_lines(path: &Path) -> Result<(String, String), String> {
         .ok_or_else(|| "identity file missing public key".to_string())?
         .trim()
         .to_string();
-    Ok((blob, public))
+    Ok((header, data, public))
+}
+
+fn decode_plaintext(seed_b58: &str) -> Result<SigningKey, String> {
+    let seed = Zeroizing::new(
+        bs58::decode(seed_b58)
+            .into_vec()
+            .map_err(|e| format!("bad base58 seed: {e}"))?,
+    );
+    let arr: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .map_err(|_| "seed is not 32 bytes".to_string())?;
+    Ok(SigningKey::from_bytes(&arr))
 }
 
 /// Encrypted-seed blob: [4 m_cost][4 t_cost][4 p_cost][16 salt][12 nonce][ct].
-fn encrypt_seed(seed: &[u8; 32], passphrase: &str) -> Result<String, String> {
+fn encrypt_seed(seed: &[u8; 32], passphrase: &str) -> Result<Zeroizing<String>, String> {
     use rand_core::RngCore;
 
     let mut salt = [0u8; 16];
@@ -137,7 +177,7 @@ fn encrypt_seed(seed: &[u8; 32], passphrase: &str) -> Result<String, String> {
     out.extend_from_slice(&salt);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
-    Ok(bs58::encode(out).into_string())
+    Ok(Zeroizing::new(bs58::encode(out).into_string()))
 }
 
 fn decrypt_seed(blob_b58: &str, passphrase: &str) -> Result<SigningKey, String> {
@@ -191,16 +231,29 @@ mod tests {
     use sqnr_core::Signer;
 
     #[test]
-    fn round_trip_and_public_without_passphrase() {
+    fn encrypted_round_trip_and_public_without_passphrase() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity");
-        let public = generate(&path, "correct horse").unwrap();
+        let public = generate(&path, Some("correct horse")).unwrap();
 
+        assert!(is_encrypted(&path).unwrap());
         // Public key readable without the passphrase.
         assert_eq!(read_public(&path).unwrap(), public);
-
         // Load with the right passphrase, and the signer matches.
-        let signer = load(&path, "correct horse").unwrap();
+        let signer = load(&path, Some("correct horse")).unwrap();
+        assert_eq!(PubKey::new(signer.public()), public);
+    }
+
+    #[test]
+    fn plaintext_signs_without_a_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity");
+        let public = generate(&path, None).unwrap();
+
+        assert!(!is_encrypted(&path).unwrap());
+        assert_eq!(read_public(&path).unwrap(), public);
+        // No passphrase needed to load a plaintext key — the automation path.
+        let signer = load(&path, None).unwrap();
         assert_eq!(PubKey::new(signer.public()), public);
     }
 
@@ -208,24 +261,34 @@ mod tests {
     fn wrong_passphrase_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity");
-        generate(&path, "right").unwrap();
-        assert!(load(&path, "wrong").is_err());
+        generate(&path, Some("right")).unwrap();
+        assert!(load(&path, Some("wrong")).is_err());
     }
 
     #[test]
-    fn file_is_0600() {
+    fn encrypted_load_requires_passphrase() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity");
-        generate(&path, "pw").unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        generate(&path, Some("pw")).unwrap();
+        assert!(load(&path, None).is_err());
+    }
+
+    #[test]
+    fn files_are_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, pp) in [("enc", Some("pw")), ("plain", None)] {
+            let path = dir.path().join(name);
+            generate(&path, pp).unwrap();
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{name} should be 0600");
+        }
     }
 
     #[test]
     fn refuses_overwrite() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity");
-        generate(&path, "pw").unwrap();
-        assert!(generate(&path, "pw").is_err());
+        generate(&path, None).unwrap();
+        assert!(generate(&path, None).is_err());
     }
 }

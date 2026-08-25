@@ -3,8 +3,9 @@
 sqnr signs admin transactions against a sqex-style HTTP/3 server. Authority is
 an **Ed25519 signature on the command itself** — never the connection's
 transport key — and the signing key lives in one of two interchangeable
-backends: a **YubiKey** (OpenPGP Authentication key) or an **encrypted software
-identity** in `~/.sqnr`. It ships as a CLI.
+backends: a **YubiKey** (OpenPGP Authentication key) or a **software identity**
+in `~/.sqnr` (encrypted for humans, or plaintext for unattended automation). It
+ships as a CLI.
 
 ## Why
 
@@ -23,10 +24,12 @@ the same signature to the server; only the key custody differs.
 
 ## The two backends
 
-- **Software identity** — `~/.sqnr/identity`, always encrypted at rest
-  (argon2id + ChaCha20-Poly1305). The public key is stored in the clear so
-  `sqnr pubkey` needs no passphrase; only signing decrypts. Create it with
-  `sqnr keygen`.
+- **Software identity** — `~/.sqnr/identity`. `sqnr keygen` seals it with a
+  passphrase (argon2id + ChaCha20-Poly1305); `sqnr keygen --plaintext` writes it
+  unencrypted (mode 0600) so an automated caller can sign with **no prompt** —
+  the deliberate trade-off for unattended signing. Either way the public key is
+  stored in the clear, so `sqnr pubkey` never needs the passphrase and the
+  signing path only prompts when the key is actually encrypted.
 - **YubiKey** (`--yubikey`) — the OpenPGP Authentication subkey via INTERNAL
   AUTHENTICATE, a raw RFC 8032 Ed25519 signature. One PIN prompt per invocation,
   then a physical touch to sign.
@@ -50,6 +53,7 @@ depends on that crate alone to verify.
 
 ```
 sqnr keygen                                  # create ~/.sqnr/identity (prompts)
+sqnr keygen --plaintext                      # unencrypted key for automation (no prompt)
 sqnr pubkey                                  # print the admin key to authorize
 sqnr --server 127.0.0.1:5400 --server-key <b58> status
 sqnr whitelist enable                        # signs (passphrase prompt)

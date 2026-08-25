@@ -42,11 +42,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a new encrypted software identity (prompts for a passphrase).
+    /// Create a new software identity (encrypted by default; prompts for a passphrase).
     Keygen {
         /// Where to write the identity (default ~/.sqnr/identity).
         #[arg(short = 'f', long)]
         file: Option<PathBuf>,
+        /// Store the key unencrypted, with no passphrase, so it can sign
+        /// unattended (e.g. from automation). The seed sits in the file (0600).
+        #[arg(long)]
+        plaintext: bool,
     },
     /// Print the admin Ed25519 public key (base58) for the selected backend.
     Pubkey,
@@ -92,7 +96,7 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), String> {
     let cfg = Config::load();
     match &cli.cmd {
-        Cmd::Keygen { file } => keygen(&cli, &cfg, file.clone()),
+        Cmd::Keygen { file, plaintext } => keygen(&cli, &cfg, file.clone(), *plaintext),
         Cmd::Pubkey => pubkey(&cli, &cfg).await,
         Cmd::Status => status(&cli, &cfg).await,
         Cmd::Whitelist { action } => whitelist(&cli, &cfg, action).await,
@@ -107,21 +111,29 @@ async fn run(cli: Cli) -> Result<(), String> {
 
 // ---- key management (no networking) ------------------------------------------
 
-fn keygen(cli: &Cli, cfg: &Config, file: Option<PathBuf>) -> Result<(), String> {
+fn keygen(cli: &Cli, cfg: &Config, file: Option<PathBuf>, plaintext: bool) -> Result<(), String> {
     let path = match file {
         Some(p) => p,
         None => identity_path(cli, cfg)?,
     };
-    let pass = rpassword::prompt_password("New passphrase: ").map_err(|e| e.to_string())?;
-    if pass.len() < 8 {
-        return Err("passphrase must be at least 8 characters".into());
-    }
-    let confirm = rpassword::prompt_password("Confirm passphrase: ").map_err(|e| e.to_string())?;
-    if pass != confirm {
-        return Err("passphrases do not match".into());
-    }
-    let public = identity::generate(&path, &pass)?;
+    let public = if plaintext {
+        identity::generate(&path, None)?
+    } else {
+        let pass = rpassword::prompt_password("New passphrase: ").map_err(|e| e.to_string())?;
+        if pass.len() < 8 {
+            return Err("passphrase must be at least 8 characters".into());
+        }
+        let confirm =
+            rpassword::prompt_password("Confirm passphrase: ").map_err(|e| e.to_string())?;
+        if pass != confirm {
+            return Err("passphrases do not match".into());
+        }
+        identity::generate(&path, Some(&pass))?
+    };
     println!("created {}", path.display());
+    if plaintext {
+        println!("WARNING: this key is UNENCRYPTED (no passphrase); protect the file.");
+    }
     println!("public key: {public}");
     println!("\nAdd this key to the server's `admins` list to authorize it.");
     Ok(())
@@ -254,9 +266,14 @@ async fn signing_backend(cli: &Cli, cfg: &Config) -> Result<Backend, String> {
                 path.display()
             ));
         }
-        let pass = rpassword::prompt_password(format!("Passphrase for {}: ", path.display()))
-            .map_err(|e| e.to_string())?;
-        Ok(Backend::software(identity::load(&path, &pass)?))
+        // A plaintext identity signs with no prompt — the unattended path.
+        if identity::is_encrypted(&path)? {
+            let pass = rpassword::prompt_password(format!("Passphrase for {}: ", path.display()))
+                .map_err(|e| e.to_string())?;
+            Ok(Backend::software(identity::load(&path, Some(&pass))?))
+        } else {
+            Ok(Backend::software(identity::load(&path, None)?))
+        }
     }
 }
 
