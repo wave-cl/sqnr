@@ -24,6 +24,9 @@ impl Client {
                 // idle timeout is 60s; pinging well inside that stops an idle
                 // admin session from dying between actions.
                 keep_alive: Some(std::time::Duration::from_secs(15)),
+                // Fail fast when the server is down, wrong, or unreachable
+                // (default is Quinn's 10s); an admin CLI should not hang.
+                handshake_timeout: Some(std::time::Duration::from_secs(5)),
                 ..Default::default()
             },
         )
