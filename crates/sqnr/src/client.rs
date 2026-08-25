@@ -6,8 +6,15 @@ use bytes::Buf;
 use squic::Config as SquicConfig;
 
 /// One HTTP/3 connection to the admin server, reused across requests.
+///
+/// The underlying QUIC connection is kept alongside the HTTP/3 layer so a caller
+/// can also send and receive **datagrams** on it (RFC 9221) — unreliable,
+/// unordered, one packet per send. Requests and datagrams share the connection,
+/// which is what lets a relayed session negotiate over HTTP/3 and then carry
+/// real-time media over datagrams without opening anything new.
 pub struct Client {
     send: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
+    conn: quinn::Connection,
     _drive: tokio::task::JoinHandle<()>,
 }
 
@@ -42,6 +49,9 @@ impl Client {
         let conn = squic::dial(addr, server_pub, config)
             .await
             .map_err(|e| format!("connect: {e}"))?;
+        // Keep a handle on the QUIC connection before handing it to h3: it is
+        // cheap to clone (an Arc inside) and is the only route to datagrams.
+        let raw = conn.clone();
         let (mut driver, send) = h3::client::new(h3_quinn::Connection::new(conn))
             .await
             .map_err(|e| format!("h3 setup: {e}"))?;
@@ -50,8 +60,36 @@ impl Client {
         });
         Ok(Client {
             send,
+            conn: raw,
             _drive: drive,
         })
+    }
+
+    /// Send one datagram. Unreliable and unordered by design: it is not
+    /// retransmitted and may be dropped, which is the right trade for media
+    /// where a late packet is worth less than a lost one.
+    ///
+    /// Fails if the payload exceeds what the path will carry — see
+    /// [`max_datagram_size`](Self::max_datagram_size).
+    pub fn send_datagram(&self, payload: Vec<u8>) -> Result<(), String> {
+        self.conn
+            .send_datagram(bytes::Bytes::from(payload))
+            .map_err(|e| format!("send datagram: {e}"))
+    }
+
+    /// Await the next datagram from the server.
+    pub async fn read_datagram(&self) -> Result<Vec<u8>, String> {
+        self.conn
+            .read_datagram()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| format!("read datagram: {e}"))
+    }
+
+    /// The largest datagram this path will currently carry, if datagrams are
+    /// enabled on both ends. `None` means the peer does not support them.
+    pub fn max_datagram_size(&self) -> Option<usize> {
+        self.conn.max_datagram_size()
     }
 
     /// Dial `addr` *as* the identity behind `seed`, advertising it so the server
@@ -76,6 +114,9 @@ impl Client {
                 handshake_timeout: Some(std::time::Duration::from_secs(5)),
                 client_key: Some(hex::encode(seed)),
                 advertise_identity: true,
+                // Sessions may carry real-time media over datagrams once
+                // negotiated; enabling here costs nothing if unused.
+                enable_datagrams: true,
                 ..Default::default()
             },
         )

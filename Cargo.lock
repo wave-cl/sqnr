@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "sqnr"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "bs58",
@@ -1596,6 +1596,7 @@ dependencies = [
  "hex",
  "http",
  "openpgp-card",
+ "quinn",
  "rand_core 0.6.4",
  "rpassword",
  "secrecy",
@@ -1611,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "sqnr-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bs58",
  "ed25519-dalek",
