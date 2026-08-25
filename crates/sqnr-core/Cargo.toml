@@ -1,0 +1,12 @@
+[package]
+name = "sqnr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Keys and the signed admin-command protocol for sqnr (the sQUIC signer)."
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+bs58 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,42 @@
+[package]
+name = "sqnr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The sQUIC signer: sign admin transactions with a YubiKey or an encrypted local identity, over HTTP/3."
+default-run = "sqnr"
+
+[lib]
+name = "sqnr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sqnr"
+path = "src/main.rs"
+
+[dependencies]
+sqnr-core = { workspace = true }
+squic = { workspace = true }
+tokio = { workspace = true }
+h3 = { workspace = true }
+h3-quinn = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+ed25519-dalek = { workspace = true }
+bs58 = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+rpassword = { workspace = true }
+rand_core = { workspace = true }
+openpgp-card = { workspace = true }
+card-backend-pcsc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

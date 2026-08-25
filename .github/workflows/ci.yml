@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The YubiKey backend links libpcsc (via card-backend-pcsc). macOS has the
+      # PCSC framework built in; Linux CI needs the dev package.
+      - name: Install PC/SC
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # ring builds from source, so an uncached run is slow enough to
+      # discourage anyone from waiting on it.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
