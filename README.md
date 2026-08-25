@@ -86,7 +86,7 @@ sqnr --yubikey pubkey      # the YubiKey's Authentication-key public key
 
 Signing actual commands is done by the service's own tool built on the sqnr
 library — for sqex, that is [`sqex`](https://github.com/wave-cl/sqex) (e.g.
-`sqex --server … whitelist enable`). Common connection defaults can be set once
+`sqex admin whitelist enable`). Common connection defaults can be set once
 in `~/.sqnr/config`:
 
 ```toml
