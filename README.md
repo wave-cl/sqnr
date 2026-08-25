@@ -13,6 +13,17 @@ any server's command set, so a new command never touches the signer. A service
 vocabulary and its own CLI on top of sqnr's library; sqnr itself ships a small
 CLI for **identity management**.
 
+## Install
+
+```
+curl -fsSL https://raw.githubusercontent.com/wave-cl/sqnr/main/install.sh | sh
+```
+
+Installs the `sqnr` binary from the latest release (Linux x86_64 and macOS; on
+other targets, `cargo install --git https://github.com/wave-cl/sqnr sqnr`). The
+`--yubikey` path needs libpcsclite at runtime on Linux (`apt install
+libpcsclite1`).
+
 ## Why
 
 A sQUIC connection proves a caller's key during the handshake, but some
