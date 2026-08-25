@@ -15,7 +15,7 @@ impl Client {
     /// Dial `addr`, pinning the server's Ed25519 key. The transport key is
     /// ephemeral: admin authority is the command signature, not the connection.
     pub async fn connect(addr: SocketAddr, server_pub: &[u8; 32]) -> Result<Client, String> {
-        let conn = squic::dial(
+        Self::dial(
             addr,
             server_pub,
             SquicConfig {
@@ -31,7 +31,17 @@ impl Client {
             },
         )
         .await
-        .map_err(|e| format!("connect: {e}"))?;
+    }
+
+    /// Shared dial + HTTP/3 setup for both connection styles.
+    async fn dial(
+        addr: SocketAddr,
+        server_pub: &[u8; 32],
+        config: SquicConfig,
+    ) -> Result<Client, String> {
+        let conn = squic::dial(addr, server_pub, config)
+            .await
+            .map_err(|e| format!("connect: {e}"))?;
         let (mut driver, send) = h3::client::new(h3_quinn::Connection::new(conn))
             .await
             .map_err(|e| format!("h3 setup: {e}"))?;
@@ -42,6 +52,34 @@ impl Client {
             send,
             _drive: drive,
         })
+    }
+
+    /// Dial `addr` *as* the identity behind `seed`, advertising it so the server
+    /// can name this caller at accept without having registered it (SIP-3).
+    ///
+    /// Unlike [`connect`](Self::connect), which is anonymous, this pins the
+    /// transport key to the identity's own key and puts the Ed25519 name in the
+    /// Initial envelope. Use it where the connection *is* the assertion — a
+    /// SIP-4 beacon — rather than where authority is a signature. `seed` is the
+    /// identity's secret; only a software identity has one to give.
+    pub async fn connect_as(
+        addr: SocketAddr,
+        server_pub: &[u8; 32],
+        seed: &[u8; 32],
+    ) -> Result<Client, String> {
+        Self::dial(
+            addr,
+            server_pub,
+            SquicConfig {
+                alpn_protocols: vec![b"h3".to_vec()],
+                keep_alive: Some(std::time::Duration::from_secs(15)),
+                handshake_timeout: Some(std::time::Duration::from_secs(5)),
+                client_key: Some(hex::encode(seed)),
+                advertise_identity: true,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     pub async fn get(&mut self, path: &str) -> Result<(u16, Vec<u8>), String> {

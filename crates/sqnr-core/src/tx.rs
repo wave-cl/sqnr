@@ -129,6 +129,17 @@ impl SoftwareSigner {
     pub fn new(key: SigningKey) -> Self {
         Self { key }
     }
+
+    /// The 32-byte Ed25519 seed — the **secret**.
+    ///
+    /// Exposed for one reason: deriving the sQUIC transport key, so a caller can
+    /// connect *as* this identity and be named by the server (SIP-3). Signing
+    /// never needs it. A hardware identity has no seed to give, which is why
+    /// only a software identity can hold a transport identity at all
+    /// (see SIP-11).
+    pub fn seed(&self) -> [u8; 32] {
+        self.key.to_bytes()
+    }
 }
 
 impl Signer for SoftwareSigner {

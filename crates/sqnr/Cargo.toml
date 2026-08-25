@@ -25,6 +25,7 @@ bytes = { workspace = true }
 clap = { workspace = true }
 ed25519-dalek = { workspace = true }
 bs58 = { workspace = true }
+hex = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
