@@ -224,21 +224,20 @@ pub struct Stream {
     status: u16,
 }
 
-impl Drop for Stream {
-    /// Tell the server we have stopped reading.
-    ///
-    /// Without this, a server holding a stream open — the whole point of this
-    /// type — learns nothing when the client drops it, and goes on writing into
-    /// a stream nobody will read until the *connection* dies. That is a
-    /// resource it is holding on the client's behalf, and the client is the
-    /// only end that knows it is no longer wanted.
-    ///
-    /// `STOP_SENDING` rather than a graceful close because there is nothing
-    /// graceful to say: the response was never going to end on its own.
-    fn drop(&mut self) {
-        self.inner.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
-    }
-}
+// No `Drop` impl, and that is deliberate rather than an omission.
+//
+// Telling the server we have stopped reading — `STOP_SENDING` — is the obvious
+// thing to do here, and it was done here, and it panicked in the field.
+// `h3-quinn`'s `poll_data` **takes** the inner `quinn::RecvStream` into the
+// pending read future and only puts it back when that read completes, so while
+// a read is in flight the option `stop_sending` unwraps is `None`. A stream
+// like this one is read in a loop, which means a read is in flight essentially
+// always, which means dropping it panicked essentially always.
+//
+// The lost tidiness is bounded and already documented: a server holding this
+// open finds out on its next write, which for the sqex event stream is a
+// heartbeat at most twenty seconds away. A panic in a destructor, on whatever
+// worker thread happens to run it, is not worth twenty seconds.
 
 impl Stream {
     /// The status the server answered with, already received.
