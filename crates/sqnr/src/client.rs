@@ -131,6 +131,44 @@ impl Client {
         self.request("POST", path, Some(body)).await
     }
 
+    /// Open a request whose response body is read over time — see [`Stream`].
+    ///
+    /// Takes `&self`, and that is the point rather than an accident: `post` and
+    /// `get` borrow mutably and so can only run one at a time, which would make
+    /// a stream held open for hours the *only* thing this client could do.
+    /// `SendRequest` is `Clone` and HTTP/3 multiplexes streams over one
+    /// connection, so a long-lived stream and ordinary requests coexist on the
+    /// same connection with no second handshake and no second socket.
+    ///
+    /// Returns once the response head has arrived, so the caller learns the
+    /// status before committing to read the body.
+    pub async fn stream(&self, method: &str, path: &str, body: Vec<u8>) -> Result<Stream, String> {
+        let req = http::Request::builder()
+            .method(method)
+            .uri(format!("https://sqex{path}"))
+            .body(())
+            .map_err(|e| e.to_string())?;
+        // A clone of the sender, not the sender: this borrows the client
+        // immutably and must not hold anything the next request needs.
+        let mut send = self.send.clone();
+        let mut stream = send.send_request(req).await.map_err(|e| e.to_string())?;
+        if !body.is_empty() {
+            stream
+                .send_data(bytes::Bytes::from(body))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        // Close our half. The server reads a bounded body to its end before it
+        // answers, so a stream that never finished sending would never be read.
+        stream.finish().await.map_err(|e| e.to_string())?;
+        let resp = stream.recv_response().await.map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        Ok(Stream {
+            inner: stream,
+            status,
+        })
+    }
+
     async fn request(
         &mut self,
         method: &str,
@@ -165,5 +203,68 @@ impl Client {
             }
         }
         Ok((status, out))
+    }
+}
+
+/// A response whose body arrives over time rather than all at once.
+///
+/// An HTTP/3 request is a bidirectional stream, and nothing obliges the server
+/// to finish the response when it has sent the first byte. That is the whole
+/// mechanism here: the client sends its request, closes its own send side, and
+/// then reads body chunks for as long as the server keeps writing them — which
+/// may be hours. It is how a server pushes to a client without the client
+/// asking again, and without either end opening anything new.
+///
+/// Chunk boundaries are **not** meaningful. h3 may coalesce two writes into one
+/// read or split one write across two, so a caller that needs messages rather
+/// than bytes must frame them itself. This type deliberately does not: it has
+/// no business knowing what the application put on the wire.
+pub struct Stream {
+    inner: h3::client::RequestStream<h3_quinn::BidiStream<bytes::Bytes>, bytes::Bytes>,
+    status: u16,
+}
+
+impl Drop for Stream {
+    /// Tell the server we have stopped reading.
+    ///
+    /// Without this, a server holding a stream open — the whole point of this
+    /// type — learns nothing when the client drops it, and goes on writing into
+    /// a stream nobody will read until the *connection* dies. That is a
+    /// resource it is holding on the client's behalf, and the client is the
+    /// only end that knows it is no longer wanted.
+    ///
+    /// `STOP_SENDING` rather than a graceful close because there is nothing
+    /// graceful to say: the response was never going to end on its own.
+    fn drop(&mut self) {
+        self.inner.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+    }
+}
+
+impl Stream {
+    /// The status the server answered with, already received.
+    ///
+    /// [`Client::stream`] does not return until the response head has arrived,
+    /// so a caller can refuse a 403 without reading a single chunk — and, more
+    /// usefully, can treat this returning at all as proof that the server has
+    /// the request in hand.
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// The next chunk of the body, or `None` once the server finishes.
+    pub async fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
+        match self.inner.recv_data().await {
+            Ok(Some(mut chunk)) => {
+                let mut out = Vec::with_capacity(chunk.remaining());
+                while chunk.remaining() > 0 {
+                    let n = chunk.chunk().len();
+                    out.extend_from_slice(chunk.chunk());
+                    chunk.advance(n);
+                }
+                Ok(Some(out))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("stream read: {e}")),
+        }
     }
 }
