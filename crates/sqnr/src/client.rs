@@ -4,6 +4,40 @@ use std::net::SocketAddr;
 
 use bytes::Buf;
 use squic::Config as SquicConfig;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// The SIP-29 envelope version every client in this process emits.
+///
+/// Zero means unset, which leaves squic's own default in place — and zero is
+/// safe as the sentinel because SIP-29 reserves version 0 and forbids emitting
+/// it, so it can never be a version somebody meant.
+///
+/// A process-wide setting rather than a parameter because that is what it
+/// actually is: a property of the deployment being talked to, not of any one
+/// connection. Threading it through would touch every `connect`/`connect_as`
+/// call site, of which there are around ninety, none of which has an opinion.
+static ENVELOPE_VERSION: AtomicU8 = AtomicU8::new(0);
+
+/// Set the envelope version every subsequent connection from this process will
+/// emit. Call it once, from configuration, before dialling.
+pub fn set_envelope_version(version: u8) {
+    ENVELOPE_VERSION.store(version, Ordering::Relaxed);
+}
+
+/// The configured envelope version, or `None` to use squic's default.
+///
+/// An explicit `set_envelope_version` wins; otherwise `SQEX_ENVELOPE_VERSION`
+/// is consulted, so an operator can reach a server that has retired older
+/// envelopes without rebuilding or writing a config file.
+pub fn envelope_version() -> Option<u8> {
+    match ENVELOPE_VERSION.load(Ordering::Relaxed) {
+        0 => std::env::var("SQEX_ENVELOPE_VERSION")
+            .ok()
+            .and_then(|v| v.trim().parse::<u8>().ok())
+            .filter(|v| *v != 0),
+        v => Some(v),
+    }
+}
 
 /// One HTTP/3 connection to the admin server, reused across requests.
 ///
@@ -46,6 +80,11 @@ impl Client {
         server_pub: &[u8; 32],
         config: SquicConfig,
     ) -> Result<Client, String> {
+        // One place, so both connection styles and every caller inherit it.
+        let config = match envelope_version() {
+            Some(v) => SquicConfig { envelope_version: v, ..config },
+            None => config,
+        };
         let conn = squic::dial(addr, server_pub, config)
             .await
             .map_err(|e| format!("connect: {e}"))?;
@@ -265,5 +304,38 @@ impl Stream {
             Ok(None) => Ok(None),
             Err(e) => Err(format!("stream read: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod envelope_version_tests {
+    use super::*;
+
+    /// Zero is the sentinel for "unset" because SIP-29 reserves version 0 and
+    /// forbids emitting it, so it can never be a version somebody meant.
+    #[test]
+    fn an_explicit_setting_wins_and_zero_means_unset() {
+        set_envelope_version(3);
+        assert_eq!(envelope_version(), Some(3));
+        set_envelope_version(0);
+        // Unset falls through to the environment, which is not set here.
+        unsafe { std::env::remove_var("SQEX_ENVELOPE_VERSION") };
+        assert_eq!(envelope_version(), None);
+    }
+
+    /// The environment is the route that needs no rebuild and no config file —
+    /// the one an operator reaches for when a server has retired an envelope
+    /// and every client is timing out with no diagnostic.
+    #[test]
+    fn the_environment_is_consulted_when_nothing_was_set() {
+        set_envelope_version(0);
+        unsafe { std::env::set_var("SQEX_ENVELOPE_VERSION", "3") };
+        assert_eq!(envelope_version(), Some(3));
+        // Nonsense and the reserved zero are both ignored rather than emitted.
+        unsafe { std::env::set_var("SQEX_ENVELOPE_VERSION", "not a number") };
+        assert_eq!(envelope_version(), None);
+        unsafe { std::env::set_var("SQEX_ENVELOPE_VERSION", "0") };
+        assert_eq!(envelope_version(), None);
+        unsafe { std::env::remove_var("SQEX_ENVELOPE_VERSION") };
     }
 }
