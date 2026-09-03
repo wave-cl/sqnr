@@ -311,16 +311,31 @@ impl Stream {
 mod envelope_version_tests {
     use super::*;
 
+    /// Both tests below drive the same two pieces of process-wide state — the
+    /// `ENVELOPE_VERSION` static and the `SQEX_ENVELOPE_VERSION` variable —
+    /// and libtest runs them on separate threads in one process. Without this
+    /// they interleave: one clears the variable, the other sets it to "3", and
+    /// the first then reads `Some(3)` where it required `None`. That failed
+    /// about one run in four.
+    ///
+    /// A lock rather than a merge into one test, because the two behaviours
+    /// are worth naming separately. Poisoning is recovered rather than
+    /// propagated: if one test panics the other should still report its own
+    /// result, not a second failure that hides it.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Zero is the sentinel for "unset" because SIP-29 reserves version 0 and
     /// forbids emitting it, so it can never be a version somebody meant.
     #[test]
     fn an_explicit_setting_wins_and_zero_means_unset() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         set_envelope_version(3);
         assert_eq!(envelope_version(), Some(3));
         set_envelope_version(0);
         // Unset falls through to the environment, which is not set here.
         unsafe { std::env::remove_var("SQEX_ENVELOPE_VERSION") };
         assert_eq!(envelope_version(), None);
+        set_envelope_version(0);
     }
 
     /// The environment is the route that needs no rebuild and no config file —
@@ -328,6 +343,7 @@ mod envelope_version_tests {
     /// and every client is timing out with no diagnostic.
     #[test]
     fn the_environment_is_consulted_when_nothing_was_set() {
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         set_envelope_version(0);
         unsafe { std::env::set_var("SQEX_ENVELOPE_VERSION", "3") };
         assert_eq!(envelope_version(), Some(3));
