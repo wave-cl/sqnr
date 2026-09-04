@@ -45,6 +45,13 @@ enum Cmd {
     },
     /// Print the admin Ed25519 public key (base58) for the selected backend.
     Pubkey,
+    /// Generate an Ed25519 Authentication key on a YubiKey.
+    ///
+    /// DESTRUCTIVE AND PERMANENT: it overwrites whatever is in the card's
+    /// Authentication slot, and the private half is generated on-card and can
+    /// never be extracted or restored — so a card whose key is already trusted
+    /// somewhere loses that identity here. Needs the admin PIN (PW3).
+    Provision,
 }
 
 #[tokio::main]
@@ -60,7 +67,41 @@ async fn run(cli: Cli) -> Result<(), String> {
     match &cli.cmd {
         Cmd::Keygen { file, plaintext } => keygen(&cli, &cfg, file.clone(), *plaintext),
         Cmd::Pubkey => pubkey(&cli, &cfg).await,
+        Cmd::Provision => provision(&cli).await,
     }
+}
+
+/// Generate an Ed25519 Authentication key on the card.
+///
+/// Only ever on a YubiKey: there is nothing to provision for a file identity,
+/// and `keygen` is that path. Requiring `--yubikey` explicitly means the
+/// destructive command cannot be reached by leaving a flag off.
+async fn provision(cli: &Cli) -> Result<(), String> {
+    if !cli.yubikey {
+        return Err(
+            "provision writes a key to a YubiKey; pass --yubikey to say so. For a \
+             software identity you want `sqnr keygen`."
+                .to_string(),
+        );
+    }
+
+    // Said before the PIN is asked for, not after: the operator should be able
+    // to stop at the prompt rather than discover the cost once it is spent.
+    eprintln!(
+        "This GENERATES a new Ed25519 key in the card's Authentication slot and\n\
+         OVERWRITES anything already there. The private half never leaves the\n\
+         card and cannot be backed up, so an identity replaced here is gone.\n"
+    );
+
+    // Prompted, never taken from an argument or the environment: a PIN in
+    // either is a PIN in the shell history and the process table.
+    let pin = rpassword::prompt_password("YubiKey admin PIN (PW3, 8+ digits, default 12345678): ")
+        .map_err(|e| e.to_string())?;
+
+    let card = Card::spawn();
+    let public = PubKey::new(card.provision(pin).await?);
+    println!("{public}");
+    Ok(())
 }
 
 fn keygen(cli: &Cli, cfg: &Config, file: Option<PathBuf>, plaintext: bool) -> Result<(), String> {
@@ -110,4 +151,31 @@ fn identity_path(cli: &Cli, cfg: &Config) -> Result<PathBuf, String> {
         return Ok(p.clone());
     }
     identity::default_identity_path()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `provision` is the one destructive command here, and it must not be
+    /// reachable by leaving a flag off.
+    ///
+    /// The check runs before `Card::spawn`, so this test never opens a card —
+    /// which is also the property under test: a refusal that happened *after*
+    /// the card was opened would still be a refusal, and would still be wrong.
+    #[tokio::test]
+    async fn provision_refuses_without_yubikey_and_before_touching_a_card() {
+        let cli = Cli {
+            yubikey: false,
+            identity: None,
+            cmd: Cmd::Provision,
+        };
+        let err = provision(&cli)
+            .await
+            .expect_err("provision without --yubikey must refuse");
+        assert!(err.contains("--yubikey"), "{err}");
+        // Points at the right alternative rather than only saying no: somebody
+        // reaching for this usually wants a software identity.
+        assert!(err.contains("keygen"), "{err}");
+    }
 }
