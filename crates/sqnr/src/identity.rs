@@ -103,7 +103,8 @@ pub fn load(path: &Path, passphrase: Option<&str>) -> Result<SoftwareSigner, Str
         other => return Err(format!("unknown identity header {other:?}")),
     };
     let derived = PubKey::new(key.verifying_key().to_bytes());
-    let stored = PubKey::from_base58(&public_b58).map_err(|e| format!("bad public key line: {e}"))?;
+    let stored =
+        PubKey::from_base58(&public_b58).map_err(|e| format!("bad public key line: {e}"))?;
     if derived != stored {
         return Err("identity file is inconsistent (public key does not match seed)".into());
     }
@@ -119,8 +120,9 @@ fn write_file(path: &Path, header: &str, data: &str, public: &PubKey) -> Result<
 }
 
 fn read_lines(path: &Path) -> Result<(String, String, String), String> {
-    let content =
-        Zeroizing::new(fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?);
+    let content = Zeroizing::new(
+        fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?,
+    );
     let mut lines = content.lines();
     let header = lines.next().unwrap_or("").trim().to_string();
     if header != ENC_HEADER && header != PLAIN_HEADER {
@@ -162,7 +164,14 @@ fn encrypt_seed(seed: &[u8; 32], passphrase: &str) -> Result<Zeroizing<String>, 
     rand_core::OsRng.fill_bytes(&mut nonce_bytes);
 
     let mut derived = Zeroizing::new([0u8; 32]);
-    argon2(ARGON_M_COST, ARGON_T_COST, ARGON_P_COST, passphrase, &salt, derived.as_mut())?;
+    argon2(
+        ARGON_M_COST,
+        ARGON_T_COST,
+        ARGON_P_COST,
+        passphrase,
+        &salt,
+        derived.as_mut(),
+    )?;
 
     let cipher = ChaCha20Poly1305::new_from_slice(derived.as_ref())
         .map_err(|e| format!("cipher init: {e}"))?;

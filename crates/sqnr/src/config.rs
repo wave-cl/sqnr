@@ -40,7 +40,8 @@ impl Config {
     }
 
     pub fn from_file(path: &Path) -> Result<Config, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         toml::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
     }
 

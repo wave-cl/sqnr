@@ -82,7 +82,10 @@ impl Client {
     ) -> Result<Client, String> {
         // One place, so both connection styles and every caller inherit it.
         let config = match envelope_version() {
-            Some(v) => SquicConfig { envelope_version: v, ..config },
+            Some(v) => SquicConfig {
+                envelope_version: v,
+                ..config
+            },
             None => config,
         };
         let conn = squic::dial(addr, server_pub, config)

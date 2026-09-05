@@ -249,7 +249,9 @@ impl<'a> Reader<'a> {
     fn bytes(&mut self, max: usize) -> Result<&'a [u8]> {
         let len = self.u32()? as usize;
         if len > max {
-            return Err(Error::Malformed(format!("field of {len} bytes exceeds {max}")));
+            return Err(Error::Malformed(format!(
+                "field of {len} bytes exceeds {max}"
+            )));
         }
         self.take(len)
     }
