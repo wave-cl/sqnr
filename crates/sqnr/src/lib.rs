@@ -16,7 +16,7 @@ pub mod identity;
 pub mod signer;
 
 pub use card::Card;
-pub use client::{Client, Stream};
+pub use client::{Client, Requests, Stream};
 pub use signer::Backend;
 
 /// Crate version.

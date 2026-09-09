@@ -211,8 +211,64 @@ impl Client {
         })
     }
 
+    /// A handle that can make requests on this connection from anywhere.
+    ///
+    /// [`get`](Self::get) and [`post`](Self::post) borrow the client mutably,
+    /// so they run one at a time and none of them may outlive the client. That
+    /// is right for a command that is being waited on and wrong for a request
+    /// that is *meant* to sit there: a long poll parks for tens of seconds with
+    /// nothing to say, and holding the client for its duration would stop
+    /// everything else the caller does — which is exactly why callers passed
+    /// `wait_secs = 0` and asked again on a timer instead.
+    ///
+    /// The handle is cloneable, owns nothing borrowed, and can be moved into a
+    /// task. Each request it makes is its own HTTP/3 stream on the same
+    /// connection, so a parked one costs no handshake, no socket and no
+    /// keep-alive of its own — the same reasoning as [`stream`](Self::stream),
+    /// which has taken `&self` for the same reason since it was written.
+    ///
+    /// It does **not** keep the connection open: when the `Client` is dropped
+    /// the connection goes, and requests made from a surviving handle fail as
+    /// they would against any closed connection.
+    pub fn requests(&self) -> Requests {
+        Requests {
+            send: self.send.clone(),
+        }
+    }
+
     async fn request(
         &mut self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, Vec<u8>), String> {
+        // One implementation, reached two ways. A second copy here would be a
+        // second place for a header, a trailing chunk or an error to be got
+        // slightly differently.
+        self.requests().request(method, path, body).await
+    }
+}
+
+/// Somewhere to send a request from, without holding the [`Client`].
+///
+/// See [`Client::requests`] for what it is for. Cheap to clone: `SendRequest`
+/// is a handle on the connection's stream opener, not a connection.
+#[derive(Clone)]
+pub struct Requests {
+    send: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
+}
+
+impl Requests {
+    pub async fn get(&self, path: &str) -> Result<(u16, Vec<u8>), String> {
+        self.request("GET", path, None).await
+    }
+
+    pub async fn post(&self, path: &str, body: Vec<u8>) -> Result<(u16, Vec<u8>), String> {
+        self.request("POST", path, Some(body)).await
+    }
+
+    async fn request(
+        &self,
         method: &str,
         path: &str,
         body: Option<Vec<u8>>,
@@ -222,11 +278,11 @@ impl Client {
             .uri(format!("https://sqex{path}"))
             .body(())
             .map_err(|e| e.to_string())?;
-        let mut stream = self
-            .send
-            .send_request(req)
-            .await
-            .map_err(|e| e.to_string())?;
+        // A clone of the sender, not the sender: sending borrows it mutably,
+        // and a handle that could only be used once at a time would be no
+        // better than the client it was taken from.
+        let mut send = self.send.clone();
+        let mut stream = send.send_request(req).await.map_err(|e| e.to_string())?;
         if let Some(b) = body {
             stream
                 .send_data(bytes::Bytes::from(b))
