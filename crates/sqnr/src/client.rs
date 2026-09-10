@@ -46,10 +46,35 @@ pub fn envelope_version() -> Option<u8> {
 /// unordered, one packet per send. Requests and datagrams share the connection,
 /// which is what lets a relayed session negotiate over HTTP/3 and then carry
 /// real-time media over datagrams without opening anything new.
+///
+/// # Cloning
+///
+/// A clone is **another handle on the same connection**, not a second
+/// connection: same socket, same handshake, same keep-alive timer, and requests
+/// from either are streams multiplexed over the one path. That is what lets two
+/// parts of a program — a chat client and a call, say — reach an exchange as one
+/// identity without dialling twice, which matters beyond tidiness: an exchange
+/// fans a relayed datagram out to *every* connection an identity holds, so a
+/// second connection means every audio frame is also written to a connection
+/// where nothing reads it.
+///
+/// Dropping a clone does not close the connection; it lives as long as any
+/// handle does, and the driver task with it.
+///
+/// **Datagrams have one reader.** [`read_datagram`](Self::read_datagram) takes
+/// the next one to arrive, so two clones reading would take one each rather than
+/// both seeing all of them. Requests have no such rule — each is its own stream
+/// — but a datagram belongs to whoever asks first, and that is a decision for
+/// the program holding the clones.
+#[derive(Clone)]
 pub struct Client {
     send: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
     conn: quinn::Connection,
-    _drive: tokio::task::JoinHandle<()>,
+    /// The task that drives the HTTP/3 connection. Shared, because the
+    /// connection is: it must outlive every handle rather than the first one
+    /// dropped. Nothing awaits it — dropping a `JoinHandle` detaches the task,
+    /// which is what should happen when the last handle goes.
+    _drive: std::sync::Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl Client {
@@ -103,7 +128,7 @@ impl Client {
         Ok(Client {
             send,
             conn: raw,
-            _drive: drive,
+            _drive: std::sync::Arc::new(drive),
         })
     }
 
