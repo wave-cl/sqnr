@@ -38,6 +38,12 @@ secrecy = { workspace = true }
 rpassword = { workspace = true }
 sha1 = { workspace = true }
 rand_core = { workspace = true }
+
+# The YubiKey backend. A card is reached over PC/SC, which a phone does not
+# have -- Android ships no libpcsclite, and a phone client signs with a
+# software identity only -- so the backend, and the link to it, exist on
+# every target but that one. Nothing else in the crate changes shape.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 openpgp-card = { workspace = true }
 card-backend-pcsc = { workspace = true }
 

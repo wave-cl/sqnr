@@ -8,6 +8,7 @@
 //!
 //! The signed-command protocol and key types live in [`sqnr_core`].
 
+#[cfg(not(target_os = "android"))]
 pub mod card;
 pub mod client;
 pub mod config;
@@ -15,6 +16,7 @@ pub mod flow;
 pub mod identity;
 pub mod signer;
 
+#[cfg(not(target_os = "android"))]
 pub use card::Card;
 pub use client::{Client, Requests, Stream};
 pub use signer::Backend;

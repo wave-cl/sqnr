@@ -5,6 +5,7 @@
 
 use sqnr_core::{PubKey, Signer, SoftwareSigner};
 
+#[cfg(not(target_os = "android"))]
 use crate::card::Card;
 
 /// A resolved admin signer. Its public key is fixed at construction so callers
@@ -18,6 +19,7 @@ enum Inner {
     // Boxed: a `SigningKey` is far larger than the `Card` handle (a channel
     // sender), and clippy flags the size skew otherwise.
     Software(Box<SoftwareSigner>),
+    #[cfg(not(target_os = "android"))]
     Yubi(Card),
 }
 
@@ -32,6 +34,7 @@ impl Backend {
     }
 
     /// A YubiKey whose Authentication-slot public key has already been read.
+    #[cfg(not(target_os = "android"))]
     pub fn yubikey(card: Card, public: PubKey) -> Self {
         Self {
             public,
@@ -46,13 +49,21 @@ impl Backend {
 
     /// Whether signing this backend requires a physical touch (a YubiKey).
     pub fn is_yubikey(&self) -> bool {
-        matches!(self.inner, Inner::Yubi(_))
+        #[cfg(not(target_os = "android"))]
+        {
+            matches!(self.inner, Inner::Yubi(_))
+        }
+        #[cfg(target_os = "android")]
+        {
+            false
+        }
     }
 
     /// Produce a raw RFC 8032 Ed25519 signature over `msg`.
     pub async fn sign(&self, msg: &[u8]) -> Result<[u8; 64], String> {
         match &self.inner {
             Inner::Software(s) => Ok(s.sign(msg)),
+            #[cfg(not(target_os = "android"))]
             Inner::Yubi(card) => card.sign(msg.to_vec()).await,
         }
     }

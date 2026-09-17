@@ -9,7 +9,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use sqnr::{Card, config::Config, identity};
+#[cfg(not(target_os = "android"))]
+use sqnr::Card;
+use sqnr::{config::Config, identity};
 use sqnr_core::PubKey;
 
 #[derive(Parser)]
@@ -134,8 +136,15 @@ fn keygen(cli: &Cli, cfg: &Config, file: Option<PathBuf>, plaintext: bool) -> Re
 
 async fn pubkey(cli: &Cli, cfg: &Config) -> Result<(), String> {
     let public = if cli.yubikey {
-        let card = Card::spawn();
-        PubKey::new(card.pubkey().await?)
+        #[cfg(target_os = "android")]
+        {
+            return Err("a phone has no PC/SC, so no YubiKey; use a file identity".to_string());
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let card = Card::spawn();
+            PubKey::new(card.pubkey().await?)
+        }
     } else {
         identity::read_public(&identity_path(cli, cfg)?)?
     };
