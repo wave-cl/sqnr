@@ -22,9 +22,13 @@ pub struct Config {
     /// argument — there are ~90 `connect`/`connect_as` call sites and none of
     /// them wants an opinion about the envelope.
     ///
-    /// Set it to 3 to reach an exchange that has retired versions 1 and 2
-    /// (SIP-6); such a server drops an older envelope in silence, so the
-    /// symptom of getting this wrong is a handshake timeout with no diagnostic.
+    /// **There is nothing to choose today.** squic implements version 4 and
+    /// only version 4; versions 1 to 3 were removed rather than deprecated, so
+    /// leave it unset. A value squic cannot emit is refused at dial, naming
+    /// the version it does emit — which matters because a server that cannot
+    /// parse an envelope drops it without a word, so without that guard a
+    /// misconfiguration and an unreachable host look identical. The setting
+    /// survives for the next transition.
     pub envelope_version: Option<u8>,
 }
 
