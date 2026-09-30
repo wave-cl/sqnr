@@ -23,7 +23,7 @@ pub struct Config {
     /// them wants an opinion about the envelope.
     ///
     /// Set it to 3 to reach an exchange that has retired versions 1 and 2
-    /// (SIP-37); such a server drops an older envelope in silence, so the
+    /// (SIP-6); such a server drops an older envelope in silence, so the
     /// symptom of getting this wrong is a handshake timeout with no diagnostic.
     pub envelope_version: Option<u8>,
 }
